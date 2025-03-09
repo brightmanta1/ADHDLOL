@@ -1,0 +1,95 @@
+/* Main container styles */
+.main {
+    padding: 2rem;
+    max-width: 1200px;
+    margin: 0 auto;
+}
+
+/* Content text styling */
+.content-text {
+    line-height: 1.6;
+    margin-bottom: 2rem;
+    padding: 1.5rem;
+    background-color: #ffffff;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+/* High contrast mode */
+.high-contrast {
+    background-color: #000000 !important;
+    color: #ffffff !important;
+}
+
+/* Module selection styling */
+.stSelectbox {
+    margin-bottom: 2rem;
+}
+
+/* Quiz styling */
+.quiz-container {
+    background-color: #f8f9fa;
+    padding: 1.5rem;
+    border-radius: 8px;
+    margin-top: 2rem;
+}
+
+/* Badge styling */
+.badge {
+    display: inline-block;
+    padding: 0.5rem 1rem;
+    background-color: #7792E3;
+    color: white;
+    border-radius: 20px;
+    margin: 0.5rem;
+    font-size: 0.9rem;
+}
+
+/* Focus timer styling */
+.focus-timer {
+    font-size: 2rem;
+    font-weight: bold;
+    text-align: center;
+    color: #7792E3;
+}
+
+/* Break reminder styling */
+.break-reminder {
+    background-color: #ffd700;
+    padding: 1rem;
+    border-radius: 8px;
+    margin: 1rem 0;
+    text-align: center;
+}
+
+/* Progress bar customization */
+.stProgress > div > div {
+    background-color: #7792E3;
+}
+
+/* Button styling */
+.stButton > button {
+    background-color: #7792E3;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    padding: 0.5rem 1rem;
+    transition: background-color 0.3s;
+}
+
+.stButton > button:hover {
+    background-color: #5a73b3;
+}
+
+/* Color coding for content types */
+.example {
+    color: #4CAF50;
+    border-left: 4px solid #4CAF50;
+    padding-left: 1rem;
+}
+
+.definition {
+    color: #2196F3;
+    border-left: 4px solid #2196F3;
+    padding-left: 1rem;
+}
