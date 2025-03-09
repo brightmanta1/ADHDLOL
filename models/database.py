@@ -15,8 +15,8 @@ class UserInteraction(Base):
     interaction_type = Column(String)  # scroll, click, focus
     duration = Column(Float)
     timestamp = Column(DateTime, default=datetime.utcnow)
-    metadata = Column(JSON)
-    effectiveness_score = Column(Float)  # New: Track effectiveness of each interaction
+    meta_data = Column(JSON)  # Changed from metadata to meta_data
+    effectiveness_score = Column(Float)  # Track effectiveness of each interaction
 
 class LearningPattern(Base):
     __tablename__ = 'learning_patterns'
@@ -28,7 +28,7 @@ class LearningPattern(Base):
     completion_rate = Column(Float)
     last_updated = Column(DateTime, default=datetime.utcnow)
     metrics = Column(JSON)
-    peak_hours = Column(JSON)  # New: Store peak performance hours
+    peak_hours = Column(JSON)  # Store peak performance hours
 
 class ContentVector(Base):
     __tablename__ = 'content_vectors'
@@ -37,10 +37,10 @@ class ContentVector(Base):
     content_id = Column(String, unique=True)
     vector = Column(JSON)  # Store vector embeddings
     content_type = Column(String)
-    metadata = Column(JSON)
+    meta_data = Column(JSON)  # Changed from metadata to meta_data
     created_at = Column(DateTime, default=datetime.utcnow)
 
-class UserSchedule(Base):  # New: Track user schedules
+class UserSchedule(Base):  # Track user schedules
     __tablename__ = 'user_schedules'
 
     id = Column(Integer, primary_key=True)

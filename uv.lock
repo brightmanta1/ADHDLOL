@@ -608,8 +608,8 @@ wheels = [
 ]
 
 [[package]]
-name = "pinecone-client"
-version = "6.0.0"
+name = "pinecone"
+version = "6.0.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "certifi" },
@@ -618,9 +618,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "urllib3", marker = "python_full_version < '4.0'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/6c/ab/3ab3b81e8ad82fbfcaa4f446c7f962b18968d61543c8c9e2c38bd777c056/pinecone_client-6.0.0.tar.gz", hash = "sha256:f224fc999205e4858c4737c40922bdf42d178b361c8859bc486ec00d45b359a9", size = 7004 }
+sdist = { url = "https://files.pythonhosted.org/packages/3d/aa/acbfc236698c2b11d53711a86a35f533423b3553e0859255cdd2ced3c6c3/pinecone-6.0.1.tar.gz", hash = "sha256:2fbca13153d32d1a012a12eb10472bd5dbb645be8e441381ad88349d8b2198bb", size = 174677 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5a/e4/7780cd631dc6dad0172a245e958b41b28a70779594c0790fa08b952aa97f/pinecone_client-6.0.0-py3-none-any.whl", hash = "sha256:d81a9e73cae441e4ab6dfc9c1d8b51c9895dae2488cda64f3e21b9dfc10c8d94", size = 6654 },
+    { url = "https://files.pythonhosted.org/packages/95/df/c65cd8c825953561e7fe70addd0b41e20560abda8f54ab429384cf94f7a1/pinecone-6.0.1-py3-none-any.whl", hash = "sha256:9088c6fc85bc1d70b259b108c59df2b3687a82da491123be8f3c7dfef051ada8", size = 421359 },
 ]
 
 [[package]]
@@ -858,7 +858,7 @@ dependencies = [
     { name = "numpy" },
     { name = "openai" },
     { name = "pandas" },
-    { name = "pinecone-client" },
+    { name = "pinecone" },
     { name = "psycopg2-binary" },
     { name = "python-dotenv" },
     { name = "sqlalchemy" },
@@ -872,7 +872,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.2.3" },
     { name = "openai", specifier = ">=1.65.5" },
     { name = "pandas", specifier = ">=2.2.3" },
-    { name = "pinecone-client", specifier = ">=6.0.0" },
+    { name = "pinecone", specifier = ">=6.0.1" },
     { name = "psycopg2-binary", specifier = ">=2.9.10" },
     { name = "python-dotenv", specifier = ">=1.0.1" },
     { name = "sqlalchemy", specifier = ">=2.0.38" },

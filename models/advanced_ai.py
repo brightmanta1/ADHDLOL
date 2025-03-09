@@ -1,5 +1,4 @@
 import os
-import pinecone
 import assemblyai as aai
 from datetime import datetime, time, timedelta
 import numpy as np
@@ -10,9 +9,9 @@ import logging
 import requests
 from urllib.parse import urljoin
 from collections import defaultdict
+from pinecone import Pinecone, ServerlessSpec
 
-from .database import init_db, UserInteraction, LearningPattern, ContentVector, UserSchedule # Assuming UserSchedule is defined here
-
+from .database import init_db, UserInteraction, LearningPattern, ContentVector, UserSchedule
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -22,16 +21,19 @@ class AdvancedAIModel:
     def __init__(self):
         logger.info("Initializing AdvancedAIModel...")
         try:
-            # Initialize Pinecone
-            pinecone.init(
-                api_key=os.getenv('PINECONE_API_KEY'),
-                environment=os.getenv('PINECONE_ENV')
-            )
+            # Initialize Pinecone with new client
+            self.pc = Pinecone(api_key=os.getenv('PINECONE_API_KEY'))
             self.index_name = "adhd-learning-content"
-            if self.index_name not in pinecone.list_indexes():
+
+            # Create index if it doesn't exist
+            if self.index_name not in self.pc.list_indexes().names():
                 logger.info(f"Creating new Pinecone index: {self.index_name}")
-                pinecone.create_index(self.index_name, dimension=1536)
-            self.vector_index = pinecone.Index(self.index_name)
+                self.pc.create_index(
+                    name=self.index_name,
+                    dimension=1536,
+                    metric='cosine'
+                )
+            self.vector_index = self.pc.Index(self.index_name)
 
             # Initialize AssemblyAI
             aai.settings.api_key = os.getenv('ASSEMBLYAI_API_KEY')
@@ -50,7 +52,7 @@ class AdvancedAIModel:
         content_id: str,
         interaction_type: str,
         duration: float,
-        metadata: Dict = None
+        meta_data: Dict = None
     ) -> None:
         """Track user interactions with content."""
         try:
@@ -61,7 +63,7 @@ class AdvancedAIModel:
                     content_id=content_id,
                     interaction_type=interaction_type,
                     duration=duration,
-                    metadata=metadata or {}
+                    meta_data=meta_data or {}
                 )
                 session.add(interaction)
                 session.commit()
@@ -83,9 +85,9 @@ class AdvancedAIModel:
 
                 focus_durations = [i.duration for i in interactions if i.interaction_type == "focus"]
                 completion_rates = [
-                    i.metadata.get("completion_rate", 0)
+                    i.meta_data.get("completion_rate", 0)
                     for i in interactions
-                    if "completion_rate" in (i.metadata or {})
+                    if "completion_rate" in (i.meta_data or {})
                 ]
 
                 pattern = {
@@ -122,7 +124,7 @@ class AdvancedAIModel:
         """Analyze content type preferences."""
         type_durations = {}
         for interaction in interactions:
-            content_type = interaction.metadata.get("content_type", "unknown")
+            content_type = interaction.meta_data.get("content_type", "unknown")
             type_durations[content_type] = type_durations.get(content_type, 0) + interaction.duration
 
         total_duration = sum(type_durations.values())
@@ -160,25 +162,57 @@ class AdvancedAIModel:
         user_id: str,
         complexity: str = "medium"
     ) -> Dict[str, Any]:
-        """Adapt content based on user's learning pattern."""
+        """Adapt content based on user's learning pattern with enhanced hierarchy."""
         try:
             logger.info(f"Adapting content for user {user_id}")
             with self.DBSession() as session:
                 pattern = session.query(LearningPattern).filter_by(user_id=user_id).first()
 
+                # Create text processor instance
+                text_processor = TextProcessor() # Assume TextProcessor class exists and is properly imported
+                processed_text = text_processor.process_text(content, complexity)
+
+                # Base adaptation
                 if not pattern:
                     logger.warning(f"No learning pattern found for user {user_id}, using default adaptation")
-                    return self._default_content_adaptation(content, complexity)
+                    return {
+                        "content": processed_text.simplified,
+                        "topics": processed_text.topics,
+                        "highlighted_terms": processed_text.highlighted_terms,
+                        "tags": processed_text.tags,
+                        "key_concepts": processed_text.key_concepts,
+                        "complexity_score": processed_text.complexity_score
+                    }
 
+                # Enhanced adaptation based on learning style
+                adapted_content = None
                 if pattern.preferred_style == "deep_focus":
-                    result = self._adapt_for_deep_focus(content)
+                    adapted_content = self._adapt_for_deep_focus(
+                        processed_text.simplified,
+                        processed_text.topics,
+                        processed_text.highlighted_terms
+                    )
                 elif pattern.preferred_style == "active_learner":
-                    result = self._adapt_for_active_learner(content)
+                    adapted_content = self._adapt_for_active_learner(
+                        processed_text.simplified,
+                        processed_text.topics,
+                        processed_text.highlighted_terms
+                    )
                 else:
-                    result = self._adapt_for_interactive(content)
+                    adapted_content = self._adapt_for_interactive(
+                        processed_text.simplified,
+                        processed_text.topics,
+                        processed_text.highlighted_terms
+                    )
+
+                adapted_content.update({
+                    "tags": processed_text.tags,
+                    "key_concepts": processed_text.key_concepts,
+                    "complexity_score": processed_text.complexity_score
+                })
 
                 logger.info("Content adaptation completed successfully")
-                return result
+                return adapted_content
         except Exception as e:
             logger.error(f"Error adapting content: {str(e)}")
             raise
@@ -197,76 +231,102 @@ class AdvancedAIModel:
             "structure": "default"
         }
 
-    def _adapt_for_deep_focus(self, content: str) -> Dict[str, Any]:
-        """Adapt content for deep focus learners."""
-        sections = content.split('\n\n')
-        adapted = []
-        for section in sections:
-            adapted.extend([
-                "📚 " + section,
-                "🔑 Key Points:",
-                "• " + "\n• ".join(self._extract_key_points(section))
+    def _adapt_for_deep_focus(self, content: str, topics: Dict[str, List[str]], highlighted_terms: Dict[str, str]) -> Dict[str, Any]:
+        """Adapt content for deep focus learners with enhanced hierarchy."""
+        sections = []
+
+        # Process each topic
+        for topic, subtopics in topics.items():
+            sections.extend([
+                f"📚 {topic}",
+                "🔑 Key Concepts:",
+                *[f"• {term}" for term, color in highlighted_terms.items() if term in content],
+                "",
+                "📝 Subtopics:",
+                *[f"• {subtopic}" for subtopic in subtopics],
+                "",
+                "🎯 Summary:",
+                self._extract_key_points(content)
             ])
 
         return {
-            "adapted_content": '\n\n'.join(adapted),
+            "adapted_content": '\n'.join(sections),
             "structure": "detailed",
-            "includes_summary": True
+            "topics": topics,
+            "highlighted_terms": highlighted_terms
         }
 
-    def _adapt_for_active_learner(self, content: str) -> Dict[str, Any]:
-        """Adapt content for active learners."""
-        sections = content.split('\n\n')
-        adapted = []
-        for i, section in enumerate(sections, 1):
-            adapted.extend([
-                f"Step {i}: {section}",
-                "✍️ Practice:",
-                self._generate_quick_exercise(section)
+    def _adapt_for_active_learner(self, content: str, topics: Dict[str, List[str]], highlighted_terms: Dict[str, str]) -> Dict[str, Any]:
+        """Adapt content for active learners with enhanced hierarchy."""
+        sections = []
+
+        for topic, subtopics in topics.items():
+            sections.extend([
+                f"🎯 Topic: {topic}",
+                "",
+                "📌 Quick Overview:",
+                *[f"• {subtopic}" for subtopic in subtopics],
+                "",
+                "✍️ Practice Points:",
+                *[f"• Apply {term}" for term in highlighted_terms.keys()],
+                "",
+                "🤔 Exercise:",
+                self._generate_quick_exercise(topic)
             ])
 
         return {
-            "adapted_content": '\n\n'.join(adapted),
+            "adapted_content": '\n'.join(sections),
             "structure": "interactive",
-            "includes_exercises": True
+            "topics": topics,
+            "highlighted_terms": highlighted_terms
         }
 
-    def _adapt_for_interactive(self, content: str) -> Dict[str, Any]:
-        """Adapt content for interactive learners."""
-        sections = content.split('\n\n')
-        adapted = []
-        for section in sections:
-            adapted.extend([
-                "💡 " + section,
+    def _adapt_for_interactive(self, content: str, topics: Dict[str, List[str]], highlighted_terms: Dict[str, str]) -> Dict[str, Any]:
+        """Adapt content for interactive learners with enhanced hierarchy."""
+        sections = []
+
+        for topic, subtopics in topics.items():
+            sections.extend([
+                f"💡 Exploring: {topic}",
+                "",
+                "🎨 Visual Map:",
+                *[f"• {subtopic}" for subtopic in subtopics],
+                "",
+                "🔍 Key Terms:",
+                *[f"• {term} ({color})" for term, color in highlighted_terms.items()],
+                "",
                 "🤔 Think About:",
-                self._generate_reflection_prompt(section)
+                self._generate_reflection_prompt(topic)
             ])
 
         return {
-            "adapted_content": '\n\n'.join(adapted),
+            "adapted_content": '\n'.join(sections),
             "structure": "reflective",
-            "includes_prompts": True
+            "topics": topics,
+            "highlighted_terms": highlighted_terms
         }
 
-    def _extract_key_points(self, text: str) -> List[str]:
+
+    def _extract_key_points(self, text: str) -> str:
         """Extract key points from text."""
         sentences = text.split('. ')
-        return [s for s in sentences if any(kw in s.lower() for kw in ['key', 'important', 'must', 'should', 'critical'])]
+        key_sentences = [s for s in sentences if any(kw in s.lower() for kw in ['key', 'important', 'must', 'should', 'critical'])]
+        return ". ".join(key_sentences) if key_sentences else "No key points found."
 
     def _generate_quick_exercise(self, text: str) -> str:
         """Generate a quick exercise based on content."""
-        return f"Try to explain this concept in your own words: {text.split('.')[0]}"
+        return f"Try to explain this concept in your own words: {text}"
 
     def _generate_reflection_prompt(self, text: str) -> str:
         """Generate a reflection prompt based on content."""
-        return f"How would you apply this in your daily life: {text.split('.')[0]}?"
+        return f"How would you apply this in your daily life: {text}?"
 
     def store_content_vector(
         self,
         content_id: str,
         content: str,
         content_type: str,
-        video_metadata: Dict = None
+        video_meta_data: Dict = None
     ) -> None:
         """Store content vector in Pinecone and database."""
         try:
@@ -275,10 +335,10 @@ class AdvancedAIModel:
             vector = np.random.rand(1536).tolist()  # In practice, use proper embedding model
 
             # Store in Pinecone
-            metadata = {"content_type": content_type}
-            if video_metadata:
-                metadata["video_metadata"] = video_metadata
-            self.vector_index.upsert([(content_id, vector, metadata)])
+            meta_data = {"content_type": content_type}
+            if video_meta_data:
+                meta_data["video_meta_data"] = video_meta_data
+            self.vector_index.upsert([(content_id, vector, meta_data)])
 
             # Store in database
             with self.DBSession() as session:
@@ -286,7 +346,7 @@ class AdvancedAIModel:
                     content_id=content_id,
                     vector=vector,
                     content_type=content_type,
-                    metadata={"original_content": content, "video_metadata": video_metadata}
+                    meta_data={"original_content": content, "video_meta_data": video_meta_data}
                 )
                 session.merge(content_vector)
                 session.commit()
@@ -351,7 +411,7 @@ class AdvancedAIModel:
                 content_id=f"video_{video_metadata['id']}",
                 content=summary['text'],
                 content_type="video",
-                video_metadata=summary
+                video_meta_data=summary
             )
 
             return {
@@ -508,7 +568,7 @@ class AdvancedAIModel:
                 base_score += min(interaction.duration / 3600, 1.0) * 0.4  # Up to 40% based on duration
 
             # Consider completion rate from metadata
-            completion_rate = interaction.metadata.get("completion_rate", 0)
+            completion_rate = interaction.meta_data.get("completion_rate", 0)
             base_score += completion_rate * 0.3  # Up to 30% based on completion
 
             # Consider interaction type
