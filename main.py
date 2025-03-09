@@ -12,6 +12,9 @@ from utils.ai_models import (
     create_personalized_quiz
 )
 from utils.ai_models import ai_model #Import ai_model
+from utils.content_converter import content_converter # Added import
+import tempfile # Added import
+import os # Added import
 
 
 # Page configuration
@@ -105,6 +108,51 @@ with st.container():
     if display_mode in ["Audio", "Both"]:
         audio_file = text_to_speech(displayed_content)
         st.audio(audio_file)
+
+# File upload section (added here)
+with st.container():
+    st.subheader("Import Learning Materials")
+    uploaded_file = st.file_uploader(
+        "Upload PDF, Word, PowerPoint, or text files",
+        type=['pdf', 'docx', 'pptx', 'txt']
+    )
+
+    url_input = st.text_input(
+        "Or enter a URL (web article or YouTube video)",
+        placeholder="https://..."
+    )
+
+    if uploaded_file:
+        try:
+            # Save uploaded file temporarily
+            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{uploaded_file.name.split('.')[-1]}") as tmp_file:
+                tmp_file.write(uploaded_file.getvalue())
+                file_path = tmp_file.name
+
+            # Convert content
+            with st.spinner("Processing file..."):
+                converted_content = content_converter.convert_content(file_path)
+
+                # Update display content
+                displayed_content = converted_content['content']
+                st.success("File processed successfully!")
+
+                # Clean up temporary file
+                os.unlink(file_path)
+
+        except Exception as e:
+            st.error(f"Error processing file: {str(e)}")
+
+    elif url_input:
+        try:
+            with st.spinner("Processing URL..."):
+                converted_content = content_converter.convert_content(url_input)
+                displayed_content = converted_content['content']
+                st.success("URL content processed successfully!")
+
+        except Exception as e:
+            st.error(f"Error processing URL: {str(e)}")
+
 
 # Interactive elements
 with st.container():

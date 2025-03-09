@@ -5,6 +5,7 @@ description = "Add your description here"
 requires-python = ">=3.11"
 dependencies = [
     "assemblyai>=0.37.0",
+    "beautifulsoup4>=4.13.3",
     "graphviz>=0.20.3",
     "gtts>=2.5.4",
     "matplotlib>=3.10.1",
@@ -13,7 +14,11 @@ dependencies = [
     "pandas>=2.2.3",
     "pinecone>=6.0.1",
     "psycopg2-binary>=2.9.10",
+    "pypdf2>=3.0.1",
+    "python-docx>=1.1.2",
     "python-dotenv>=1.0.1",
+    "python-pptx>=1.0.2",
+    "pytube>=15.0.0",
     "sqlalchemy>=2.0.38",
     "streamlit>=1.43.1",
 ]
