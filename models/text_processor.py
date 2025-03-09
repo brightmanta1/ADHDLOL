@@ -68,19 +68,33 @@ class TextProcessor:
             if not line:
                 continue
 
-            # Check for topic markers (e.g., "Topic:", "Chapter:", numbered sections)
-            topic_match = re.match(r'^(?:\d+\.|[A-Z][a-z]+:|\#)\s*(.+)$', line)
-            subtopic_match = re.match(r'^(?:-|\*|\d+\.\d+\.?)\s*(.+)$', line)
+            # Enhanced topic pattern matching
+            topic_patterns = [
+                r'^(?:Chapter|Section|Part)\s+\d+:\s*(.+)$',  # Chapter 1: Topic
+                r'^(?:\d+\.|[A-Z][a-z]+:|\#)\s*(.+)$',       # 1. Topic or Topic: or #Topic
+                r'^([A-Z][a-z\s]+(?:\s+[A-Z][a-z\s]+)*):',   # Title Case Topic:
+            ]
 
-            if topic_match:
-                # Save previous topic if exists
-                if current_topic and current_subtopics:
-                    topics[current_topic] = current_subtopics
+            is_topic = False
+            for pattern in topic_patterns:
+                topic_match = re.match(pattern, line)
+                if topic_match:
+                    # Save previous topic if exists
+                    if current_topic and current_subtopics:
+                        topics[current_topic] = current_subtopics
 
-                current_topic = topic_match.group(1)
-                current_subtopics = []
-            elif subtopic_match and current_topic:
-                current_subtopics.append(subtopic_match.group(1))
+                    current_topic = topic_match.group(1).strip()
+                    current_subtopics = []
+                    is_topic = True
+                    break
+
+            if not is_topic:
+                # Check for subtopics (bullets, numbers, etc.)
+                subtopic_match = re.match(r'^(?:-|\*|\d+\.\d+\.?|\•)\s*(.+)$', line)
+                if subtopic_match and current_topic:
+                    subtopic = subtopic_match.group(1).strip()
+                    if subtopic:
+                        current_subtopics.append(subtopic)
 
         # Save last topic
         if current_topic and current_subtopics:
@@ -128,6 +142,10 @@ class TextProcessor:
         # Add topic names as tags
         topics = self.identify_topics(text)
         tags.update(topics.keys())
+
+        # Add key terms
+        highlighted_terms = self.highlight_terms(text)
+        tags.update(highlighted_terms.keys())
 
         return list(tags)
 

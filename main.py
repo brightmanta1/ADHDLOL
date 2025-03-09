@@ -11,6 +11,8 @@ from utils.ai_models import (
     generate_adaptive_content,
     create_personalized_quiz
 )
+from utils.ai_models import ai_model #Import ai_model
+
 
 # Page configuration
 st.set_page_config(
@@ -125,6 +127,39 @@ with st.container():
                         st.error("Try again!")
         else:
             st.error("Error generating quiz. Please try again.")
+
+# Visualization section
+with st.container():
+    st.subheader("Visual Learning Aids")
+
+    # Get adapted content with visualizations
+    adapted_content = ai_model.adapt_content(
+        content=displayed_content,
+        user_id="current_user",  # Replace with actual user ID when authentication is added
+        complexity=complexity
+    )
+
+    if 'visualizations' in adapted_content:
+        viz_tab1, viz_tab2, viz_tab3 = st.tabs([
+            "📊 Mind Map",
+            "🌳 Concept Hierarchy",
+            "📈 Learning Progress"
+        ])
+
+        with viz_tab1:
+            st.markdown(adapted_content['visualizations']['mindmap'], unsafe_allow_html=True)
+            st.caption("Mind map showing relationships between concepts")
+
+        with viz_tab2:
+            st.markdown(adapted_content['visualizations']['hierarchy'], unsafe_allow_html=True)
+            st.caption("Hierarchical view of topics and subtopics")
+
+        with viz_tab3:
+            st.markdown(adapted_content['visualizations']['infographic'], unsafe_allow_html=True)
+            st.caption("Your learning progress and engagement metrics")
+    elif 'visualization_error' in adapted_content:
+        st.error(f"Could not generate visualizations: {adapted_content['visualization_error']}")
+
 
 # Focus tracking and reminders
 if st.session_state.pomodoro_active:

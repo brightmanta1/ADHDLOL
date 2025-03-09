@@ -12,6 +12,8 @@ from collections import defaultdict
 from pinecone import Pinecone, ServerlessSpec
 
 from .database import init_db, UserInteraction, LearningPattern, ContentVector, UserSchedule
+from .text_processor import TextProcessor  # Add TextProcessor import
+from utils.visualization import ContentVisualizer # Add import at the top of the file
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -31,7 +33,11 @@ class AdvancedAIModel:
                 self.pc.create_index(
                     name=self.index_name,
                     dimension=1536,
-                    metric='cosine'
+                    metric='cosine',
+                    spec=ServerlessSpec(
+                        cloud='aws',
+                        region='us-east-1'
+                    )
                 )
             self.vector_index = self.pc.Index(self.index_name)
 
@@ -40,6 +46,9 @@ class AdvancedAIModel:
 
             # Initialize database
             self.DBSession = init_db()
+            # Initialize content visualizer
+            self.visualizer = ContentVisualizer()
+
             logger.info("AdvancedAIModel initialization completed successfully")
 
         except Exception as e:
@@ -162,60 +171,90 @@ class AdvancedAIModel:
         user_id: str,
         complexity: str = "medium"
     ) -> Dict[str, Any]:
-        """Adapt content based on user's learning pattern with enhanced hierarchy."""
+        """Adapt content based on user's learning pattern with enhanced hierarchy and visualizations."""
         try:
             logger.info(f"Adapting content for user {user_id}")
             with self.DBSession() as session:
                 pattern = session.query(LearningPattern).filter_by(user_id=user_id).first()
 
                 # Create text processor instance
-                text_processor = TextProcessor() # Assume TextProcessor class exists and is properly imported
+                text_processor = TextProcessor()
                 processed_text = text_processor.process_text(content, complexity)
 
-                # Base adaptation
-                if not pattern:
-                    logger.warning(f"No learning pattern found for user {user_id}, using default adaptation")
-                    return {
-                        "content": processed_text.simplified,
-                        "topics": processed_text.topics,
-                        "highlighted_terms": processed_text.highlighted_terms,
-                        "tags": processed_text.tags,
-                        "key_concepts": processed_text.key_concepts,
-                        "complexity_score": processed_text.complexity_score
+                # Generate base content structure
+                adapted_content = self._get_adapted_content(pattern, processed_text, complexity)
+
+                # Generate visualizations
+                try:
+                    mindmap_svg = self.visualizer.generate_mindmap(
+                        processed_text.topics,
+                        processed_text.highlighted_terms
+                    )
+                    hierarchy_svg = self.visualizer.create_concept_hierarchy(
+                        processed_text.topics,
+                        processed_text.highlighted_terms
+                    )
+
+                    # Generate learning stats
+                    content_stats = {
+                        'completion_rate': pattern.completion_rate if pattern else 0.5,
+                        'engagement_score': 0.75,  # Example value
+                        'understanding_level': 0.8  # Example value
                     }
+                    infographic_svg = self.visualizer.generate_learning_infographic(content_stats)
 
-                # Enhanced adaptation based on learning style
-                adapted_content = None
-                if pattern.preferred_style == "deep_focus":
-                    adapted_content = self._adapt_for_deep_focus(
-                        processed_text.simplified,
-                        processed_text.topics,
-                        processed_text.highlighted_terms
-                    )
-                elif pattern.preferred_style == "active_learner":
-                    adapted_content = self._adapt_for_active_learner(
-                        processed_text.simplified,
-                        processed_text.topics,
-                        processed_text.highlighted_terms
-                    )
-                else:
-                    adapted_content = self._adapt_for_interactive(
-                        processed_text.simplified,
-                        processed_text.topics,
-                        processed_text.highlighted_terms
-                    )
-
-                adapted_content.update({
-                    "tags": processed_text.tags,
-                    "key_concepts": processed_text.key_concepts,
-                    "complexity_score": processed_text.complexity_score
-                })
+                    # Add visualizations to the response
+                    adapted_content.update({
+                        'visualizations': {
+                            'mindmap': mindmap_svg,
+                            'hierarchy': hierarchy_svg,
+                            'infographic': infographic_svg
+                        }
+                    })
+                except Exception as viz_error:
+                    logger.error(f"Error generating visualizations: {str(viz_error)}")
+                    adapted_content['visualization_error'] = str(viz_error)
 
                 logger.info("Content adaptation completed successfully")
                 return adapted_content
+
         except Exception as e:
             logger.error(f"Error adapting content: {str(e)}")
             raise
+
+    def _get_adapted_content(self, pattern, processed_text, complexity):
+        # Base adaptation
+        if not pattern:
+            logger.warning(f"No learning pattern found, using default adaptation")
+            return {
+                "content": processed_text.simplified,
+                "topics": processed_text.topics,
+                "highlighted_terms": processed_text.highlighted_terms,
+                "tags": processed_text.tags,
+                "key_concepts": processed_text.key_concepts,
+                "complexity_score": processed_text.complexity_score
+            }
+
+        # Enhanced adaptation based on learning style
+        if pattern.preferred_style == "deep_focus":
+            return self._adapt_for_deep_focus(
+                processed_text.simplified,
+                processed_text.topics,
+                processed_text.highlighted_terms
+            )
+        elif pattern.preferred_style == "active_learner":
+            return self._adapt_for_active_learner(
+                processed_text.simplified,
+                processed_text.topics,
+                processed_text.highlighted_terms
+            )
+        else:
+            return self._adapt_for_interactive(
+                processed_text.simplified,
+                processed_text.topics,
+                processed_text.highlighted_terms
+            )
+
 
     def _default_content_adaptation(self, content: str, complexity: str) -> Dict[str, Any]:
         """Default content adaptation strategy."""
@@ -233,24 +272,27 @@ class AdvancedAIModel:
 
     def _adapt_for_deep_focus(self, content: str, topics: Dict[str, List[str]], highlighted_terms: Dict[str, str]) -> Dict[str, Any]:
         """Adapt content for deep focus learners with enhanced hierarchy."""
-        sections = []
+        formatted_sections = []
 
         # Process each topic
         for topic, subtopics in topics.items():
-            sections.extend([
-                f"📚 {topic}",
-                "🔑 Key Concepts:",
+            topic_section = [
+                f"\n📚 {topic}",  # Topic header with emoji
+                "\n🔑 Key Terms:",
                 *[f"• {term}" for term, color in highlighted_terms.items() if term in content],
-                "",
-                "📝 Subtopics:",
+                "\n📝 Details:",
                 *[f"• {subtopic}" for subtopic in subtopics],
-                "",
-                "🎯 Summary:",
-                self._extract_key_points(content)
-            ])
+                "\n🎯 Key Points:",
+                self._extract_key_points(content),
+                "\n---"  # Visual separator
+            ]
+            formatted_sections.extend(topic_section)
+
+        # Compose the final content
+        final_content = "\n".join(formatted_sections)
 
         return {
-            "adapted_content": '\n'.join(sections),
+            "content": final_content,
             "structure": "detailed",
             "topics": topics,
             "highlighted_terms": highlighted_terms
@@ -275,7 +317,7 @@ class AdvancedAIModel:
             ])
 
         return {
-            "adapted_content": '\n'.join(sections),
+            "content": '\n'.join(sections),
             "structure": "interactive",
             "topics": topics,
             "highlighted_terms": highlighted_terms
@@ -300,7 +342,7 @@ class AdvancedAIModel:
             ])
 
         return {
-            "adapted_content": '\n'.join(sections),
+            "content": '\n'.join(sections),
             "structure": "reflective",
             "topics": topics,
             "highlighted_terms": highlighted_terms
