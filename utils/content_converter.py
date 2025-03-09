@@ -8,6 +8,7 @@ from PyPDF2 import PdfReader
 from docx import Document
 from pptx import Presentation
 from pytube import YouTube
+from io import BytesIO
 from models.advanced_ai import ai_model
 from models.text_processor import TextProcessor
 
@@ -77,9 +78,15 @@ class ContentConverter:
 
     def _detect_content_type(self, file_path: str) -> str:
         """Detect content type from file extension or URL."""
+        # Extract extension from URL or file path
         if file_path.startswith(('http://', 'https://')):
             if 'youtube.com' in file_path or 'youtu.be' in file_path:
                 return 'video'
+            # Check URL extension for known file types
+            url_path = file_path.split('?')[0]  # Remove query parameters
+            ext = url_path.lower().split('.')[-1]
+            if ext in ['pdf', 'docx', 'pptx', 'txt']:
+                return ext if ext != 'docx' else 'document'
             return 'article'
 
         ext = file_path.lower().split('.')[-1]
@@ -120,11 +127,34 @@ class ContentConverter:
         """Extract text from PDF files."""
         try:
             text_content = []
-            with open(file_path, 'rb') as file:
-                pdf = PdfReader(file)
-                for page in pdf.pages:
-                    text_content.append(page.extract_text())
-            return '\n'.join(text_content)
+
+            # Handle URLs by downloading the PDF first
+            if file_path.startswith(('http://', 'https://')):
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+                response = requests.get(file_path, headers=headers, timeout=10)
+                response.raise_for_status()
+
+                # Create a PDF reader from the response content
+                pdf = PdfReader(BytesIO(response.content))
+            else:
+                # Local file
+                with open(file_path, 'rb') as file:
+                    pdf = PdfReader(file)
+
+            # Extract text from all pages
+            for page in pdf.pages:
+                text_content.append(page.extract_text())
+
+            extracted_text = '\n'.join(text_content)
+            if not extracted_text.strip():
+                raise ValueError("No text content could be extracted from the PDF")
+
+            return extracted_text
+
+        except requests.exceptions.RequestException as e:
+            raise ValueError(f"Error downloading PDF file: {str(e)}")
         except Exception as e:
             raise ValueError(f"Error reading PDF file: {str(e)}")
 
