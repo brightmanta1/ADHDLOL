@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session
 from typing import Dict, List, Any, Optional
 import json
 import logging
+import requests
+from urllib.parse import urljoin
 
 from .database import init_db, UserInteraction, LearningPattern, ContentVector
 
@@ -257,7 +259,13 @@ class AdvancedAIModel:
         """Generate a reflection prompt based on content."""
         return f"How would you apply this in your daily life: {text.split('.')[0]}?"
 
-    def store_content_vector(self, content_id: str, content: str, content_type: str) -> None:
+    def store_content_vector(
+        self, 
+        content_id: str, 
+        content: str, 
+        content_type: str,
+        video_metadata: Dict = None
+    ) -> None:
         """Store content vector in Pinecone and database."""
         try:
             logger.info(f"Storing content vector for content_id: {content_id}")
@@ -265,7 +273,10 @@ class AdvancedAIModel:
             vector = np.random.rand(1536).tolist()  # In practice, use proper embedding model
 
             # Store in Pinecone
-            self.vector_index.upsert([(content_id, vector, {"content_type": content_type})])
+            metadata = {"content_type": content_type}
+            if video_metadata:
+                metadata["video_metadata"] = video_metadata
+            self.vector_index.upsert([(content_id, vector, metadata)])
 
             # Store in database
             with self.DBSession() as session:
@@ -273,7 +284,7 @@ class AdvancedAIModel:
                     content_id=content_id,
                     vector=vector,
                     content_type=content_type,
-                    metadata={"original_content": content}
+                    metadata={"original_content": content, "video_metadata": video_metadata}
                 )
                 session.merge(content_vector)
                 session.commit()
@@ -312,6 +323,130 @@ class AdvancedAIModel:
         except Exception as e:
             logger.error(f"Error finding similar content: {str(e)}")
             raise
+    
+    async def process_video_content(self, video_url: str) -> Dict[str, Any]:
+        """Process video content using Loom API and AssemblyAI."""
+        try:
+            logger.info(f"Processing video from Loom: {video_url}")
+
+            # Extract video metadata from Loom
+            video_metadata = await self._get_loom_metadata(video_url)
+
+            # Get audio track from video for transcription
+            audio_url = video_metadata.get('audio_url')
+            if not audio_url:
+                raise ValueError("No audio track found in video")
+
+            # Transcribe audio using AssemblyAI
+            transcriber = aai.Transcriber()
+            transcript = await transcriber.transcribe(audio_url)
+
+            # Create video summary
+            summary = await self._generate_video_summary(transcript.text, video_metadata)
+
+            # Store video content vector
+            self.store_content_vector(
+                content_id=f"video_{video_metadata['id']}",
+                content=summary['text'],
+                content_type="video",
+                video_metadata=summary
+            )
+
+            return {
+                "summary": summary['text'],
+                "timestamps": summary['timestamps'],
+                "duration": video_metadata['duration'],
+                "transcript": transcript.text
+            }
+
+        except Exception as e:
+            logger.error(f"Error processing video: {str(e)}")
+            return {"error": str(e)}
+
+    async def _get_loom_metadata(self, video_url: str) -> Dict[str, Any]:
+        """Get video metadata from Loom API."""
+        try:
+            # Extract video ID from URL
+            video_id = video_url.split('/')[-1]
+
+            # Loom API endpoint
+            api_url = f"https://api.loom.com/v1/videos/{video_id}"
+
+            headers = {
+                "Authorization": f"Bearer {os.getenv('LOOM_API_KEY')}",
+                "Content-Type": "application/json"
+            }
+
+            response = requests.get(api_url, headers=headers)
+            response.raise_for_status()
+
+            return response.json()
+
+        except Exception as e:
+            logger.error(f"Error fetching Loom metadata: {str(e)}")
+            raise
+
+    async def _generate_video_summary(
+        self, 
+        transcript: str, 
+        metadata: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Generate a video summary with timestamps."""
+        try:
+            # Split transcript into segments
+            segments = self._split_into_segments(transcript)
+
+            # Generate summary for each segment
+            timestamps = []
+            summary_parts = []
+
+            for i, segment in enumerate(segments):
+                summary_part = self._summarize_segment(segment)
+                timestamp = (i * metadata['duration']) / len(segments)
+
+                timestamps.append({
+                    "time": timestamp,
+                    "text": summary_part
+                })
+                summary_parts.append(summary_part)
+
+            return {
+                "text": " ".join(summary_parts),
+                "timestamps": timestamps,
+                "duration": metadata['duration']
+            }
+
+        except Exception as e:
+            logger.error(f"Error generating video summary: {str(e)}")
+            raise
+
+    def _split_into_segments(self, text: str, max_segments: int = 6) -> List[str]:
+        """Split transcript into segments for summarization."""
+        # Split into sentences
+        sentences = text.split('. ')
+
+        # Calculate segments
+        segment_size = max(1, len(sentences) // max_segments)
+
+        # Create segments
+        segments = [
+            '. '.join(sentences[i:i + segment_size])
+            for i in range(0, len(sentences), segment_size)
+        ]
+
+        return segments[:max_segments]
+
+    def _summarize_segment(self, text: str) -> str:
+        """Summarize a segment of text."""
+        # Extract key sentences based on importance
+        sentences = text.split('. ')
+        if len(sentences) <= 2:
+            return text
+
+        # Simple extractive summarization
+        # In practice, you might want to use a more sophisticated approach
+        return '. '.join(sentences[:2]) + '.'
+
 
 # Create singleton instance
 ai_model = AdvancedAIModel()
