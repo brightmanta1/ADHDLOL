@@ -1,255 +1,401 @@
-import os
-from typing import Dict, Any, Optional
-import logging
-import re
-from bs4 import BeautifulSoup
-import requests
-from PyPDF2 import PdfReader
-from docx import Document
-from pptx import Presentation
-from pytube import YouTube
-from io import BytesIO
-from models.advanced_ai import ai_model
-from models.text_processor import TextProcessor
+"""
+Модуль для конвертации различных типов контента.
+"""
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+import logging
+from typing import Dict, List, Optional, Any, Union, Callable
+from pathlib import Path
+import json
+import yaml
+import pandas as pd
+import numpy as np
+from PIL import Image
+import cv2
+import torch
+from transformers import AutoTokenizer, AutoModel
+from .cache_manager import CacheManager
+from .gpu_manager import GPUManager
+
 
 class ContentConverter:
-    def __init__(self):
-        self.text_processor = TextProcessor()
+    def __init__(self, use_gpu: bool = True, cache_dir: str = "./cache/converter"):
+        """
+        Инициализация конвертера контента
 
-    def convert_content(self, file_path: str, content_type: str = None) -> Dict[str, Any]:
-        """Convert various content types into standardized format."""
+        Args:
+            use_gpu: Использовать ли GPU для обработки
+            cache_dir: Директория для кэширования результатов
+        """
+        self.gpu_manager = GPUManager()
+        self.device = self.gpu_manager.get_device() if use_gpu else "cpu"
+        self.cache_manager = CacheManager(cache_dir=cache_dir)
+
+        # Инициализация моделей
         try:
-            if not content_type:
-                content_type = self._detect_content_type(file_path)
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                "bert-base-multilingual-cased"
+            )
+            self.model = AutoModel.from_pretrained("bert-base-multilingual-cased").to(
+                self.device
+            )
+            logging.info(f"ContentConverter initialized using device: {self.device}")
+        except Exception as e:
+            logging.error(f"Error initializing models: {str(e)}")
+            self.tokenizer = None
+            self.model = None
+            raise
 
-            # Validate URL if it's a web resource
-            if content_type in ['article', 'video']:
-                if not self._is_valid_url(file_path):
-                    raise ValueError("Invalid URL format")
+    def convert(
+        self, content: Any, source_type: str, target_type: str
+    ) -> Union[str, Dict, List, bytes, np.ndarray]:
+        """
+        Конвертация контента из одного типа в другой
 
-            content = self._extract_content(file_path, content_type)
-            if not content:
-                raise ValueError(f"No content could be extracted from {content_type}")
+        Args:
+            content: Контент для конвертации
+            source_type: Исходный тип контента
+            target_type: Целевой тип контента
 
-            # Process the extracted content
-            processed_content = self.text_processor.process_text(content)
+        Returns:
+            Union[str, Dict, List, bytes, np.ndarray]: Сконвертированный контент
 
-            # Store in vector database for similarity search
-            content_id = f"{content_type}_{os.path.basename(file_path)}"
-            ai_model.store_content_vector(
-                content_id=content_id,
-                content=content,
-                content_type=content_type
+        Raises:
+            ValueError: Если указан неподдерживаемый тип конвертации
+            Exception: При ошибке конвертации
+        """
+        try:
+            # Проверка входных данных
+            if content is None:
+                raise ValueError("Content cannot be None")
+
+            # Генерация ключа кэша
+            cache_key = self.cache_manager.generate_key(
+                f"{str(content)[:100]}_{source_type}_{target_type}", prefix="conversion"
             )
 
-            return {
-                "content": processed_content.simplified,
-                "topics": processed_content.topics,
-                "highlighted_terms": processed_content.highlighted_terms,
-                "tags": processed_content.tags,
-                "content_type": content_type,
-                "content_id": content_id
-            }
+            # Проверка кэша
+            cached_result = self.cache_manager.get(cache_key)
+            if cached_result is not None:
+                logging.info(
+                    f"Using cached result for {source_type} to {target_type} conversion"
+                )
+                return cached_result
 
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Network error accessing URL: {str(e)}")
-            raise ValueError(f"Could not access the URL. Please check your internet connection and try again.")
-        except YouTube.exceptions.PytubeError as e:
-            logger.error(f"YouTube video processing error: {str(e)}")
-            raise ValueError(f"Could not process YouTube video. The video might be private or unavailable.")
+            # Определение метода конвертации
+            conversion_method = self._get_conversion_method(source_type, target_type)
+            if not conversion_method:
+                raise ValueError(
+                    f"Unsupported conversion: {source_type} to {target_type}"
+                )
+
+            # Конвертация
+            result = conversion_method(content)
+
+            # Кэширование результата
+            self.cache_manager.set(cache_key, result)
+            logging.info(f"Successfully converted {source_type} to {target_type}")
+
+            return result
+
+        except ValueError as e:
+            logging.error(f"Validation error in conversion: {str(e)}")
+            raise
         except Exception as e:
-            logger.error(f"Error converting content: {str(e)}")
+            logging.error(f"Error converting content: {str(e)}")
             raise
 
-    def _is_valid_url(self, url: str) -> bool:
-        """Validate URL format."""
-        url_pattern = re.compile(
-            r'^https?://'  # http:// or https://
-            r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,6}\.?|'  # domain...
-            r'localhost|'  # localhost...
-            r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'  # ...or ip
-            r'(?::\d+)?'  # optional port
-            r'(?:/?|[/?]\S+)$', re.IGNORECASE)
-        return url_pattern.match(url) is not None
+    def _get_conversion_method(
+        self, source_type: str, target_type: str
+    ) -> Optional[Callable]:
+        """
+        Получение метода конвертации на основе типов
 
-    def _detect_content_type(self, file_path: str) -> str:
-        """Detect content type from file extension or URL."""
-        # Extract extension from URL or file path
-        if file_path.startswith(('http://', 'https://')):
-            if 'youtube.com' in file_path or 'youtu.be' in file_path:
-                return 'video'
-            # Check URL extension for known file types
-            url_path = file_path.split('?')[0]  # Remove query parameters
-            ext = url_path.lower().split('.')[-1]
-            if ext in ['pdf', 'docx', 'pptx', 'txt']:
-                return ext if ext != 'docx' else 'document'
-            return 'article'
+        Args:
+            source_type: Исходный тип
+            target_type: Целевой тип
 
-        ext = file_path.lower().split('.')[-1]
-        content_types = {
-            'pdf': 'pdf',
-            'docx': 'document',
-            'doc': 'document',
-            'pptx': 'presentation',
-            'ppt': 'presentation',
-            'txt': 'text'
+        Returns:
+            Optional[Callable]: Метод конвертации или None, если конвертация не поддерживается
+        """
+        conversion_map = {
+            ("text", "vector"): self._text_to_vector,
+            ("image", "text"): self._image_to_text,
+            ("json", "yaml"): self._json_to_yaml,
+            ("yaml", "json"): self._yaml_to_json,
+            ("csv", "json"): self._csv_to_json,
+            ("json", "csv"): self._json_to_csv,
+            ("text", "summary"): self._text_to_summary,
+            ("image", "vector"): self._image_to_vector,
         }
-        return content_types.get(ext, 'unknown')
+        return conversion_map.get((source_type.lower(), target_type.lower()))
 
-    def _extract_content(self, file_path: str, content_type: str) -> str:
-        """Extract text content from various file types."""
+    def _text_to_vector(self, text: str) -> np.ndarray:
+        """
+        Конвертация текста в векторное представление
+
+        Args:
+            text: Текст для конвертации
+
+        Returns:
+            np.ndarray: Векторное представление текста
+
+        Raises:
+            ValueError: Если модели не инициализированы
+            Exception: При ошибке конвертации
+        """
         try:
-            if content_type == 'pdf':
-                return self._extract_from_pdf(file_path)
-            elif content_type == 'document':
-                return self._extract_from_docx(file_path)
-            elif content_type == 'presentation':
-                return self._extract_from_pptx(file_path)
-            elif content_type == 'article':
-                return self._extract_from_url(file_path)
-            elif content_type == 'video':
-                return self._extract_from_video(file_path)
-            elif content_type == 'text':
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    return f.read()
-            else:
-                raise ValueError(f"Unsupported content type: {content_type}")
+            if self.tokenizer is None or self.model is None:
+                raise ValueError("Models are not initialized")
 
+            inputs = self.tokenizer(
+                text, return_tensors="pt", padding=True, truncation=True, max_length=512
+            )
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
+
+            with torch.no_grad():
+                outputs = self.model(**inputs)
+                embeddings = outputs.last_hidden_state.mean(dim=1)
+
+            return embeddings.cpu().numpy()
+        except ValueError as e:
+            logging.error(f"Validation error in text_to_vector: {str(e)}")
+            raise
         except Exception as e:
-            logger.error(f"Error extracting content: {str(e)}")
+            logging.error(f"Error converting text to vector: {str(e)}")
             raise
 
-    def _extract_from_pdf(self, file_path: str) -> str:
-        """Extract text from PDF files."""
+    def _image_to_text(self, image_path: Union[str, Path]) -> str:
+        """
+        Конвертация изображения в текстовое описание
+
+        Args:
+            image_path: Путь к изображению
+
+        Returns:
+            str: Текстовое описание изображения
+
+        Raises:
+            FileNotFoundError: Если файл не найден
+            Exception: При ошибке конвертации
+        """
         try:
-            text_content = []
+            image_path = Path(image_path)
+            if not image_path.exists():
+                raise FileNotFoundError(f"Image file not found: {image_path}")
 
-            # Handle URLs by downloading the PDF first
-            if file_path.startswith(('http://', 'https://')):
-                headers = {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                }
-                response = requests.get(file_path, headers=headers, timeout=10)
-                response.raise_for_status()
-
-                # Create a PDF reader from the response content
-                pdf = PdfReader(BytesIO(response.content))
-            else:
-                # Local file
-                with open(file_path, 'rb') as file:
-                    pdf = PdfReader(file)
-
-            # Extract text from all pages
-            for page in pdf.pages:
-                text_content.append(page.extract_text())
-
-            extracted_text = '\n'.join(text_content)
-            if not extracted_text.strip():
-                raise ValueError("No text content could be extracted from the PDF")
-
-            return extracted_text
-
-        except requests.exceptions.RequestException as e:
-            raise ValueError(f"Error downloading PDF file: {str(e)}")
+            # Здесь должна быть реализация OCR или image captioning
+            # В реальном приложении используйте модель для генерации описания
+            logging.warning("Using placeholder for image_to_text conversion")
+            return f"Image description for {image_path.name}"
+        except FileNotFoundError as e:
+            logging.error(f"File not found: {str(e)}")
+            raise
         except Exception as e:
-            raise ValueError(f"Error reading PDF file: {str(e)}")
-
-    def _extract_from_docx(self, file_path: str) -> str:
-        """Extract text from Word documents."""
-        try:
-            doc = Document(file_path)
-            return '\n'.join([paragraph.text for paragraph in doc.paragraphs])
-        except Exception as e:
-            raise ValueError(f"Error reading Word document: {str(e)}")
-
-    def _extract_from_pptx(self, file_path: str) -> str:
-        """Extract text from PowerPoint presentations."""
-        try:
-            pptx = Presentation(file_path)
-            text_content = []
-
-            for slide in pptx.slides:
-                slide_text = []
-                for shape in slide.shapes:
-                    if hasattr(shape, "text"):
-                        slide_text.append(shape.text)
-                text_content.append('\n'.join(slide_text))
-
-            return '\n\n'.join(text_content)
-        except Exception as e:
-            raise ValueError(f"Error reading PowerPoint presentation: {str(e)}")
-
-    def _extract_from_url(self, url: str) -> str:
-        """Extract text from web articles."""
-        try:
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            }
-            response = requests.get(url, headers=headers, timeout=10)
-            response.raise_for_status()
-
-            soup = BeautifulSoup(response.text, 'html.parser')
-
-            # Remove script and style elements
-            for element in soup(['script', 'style', 'nav', 'header', 'footer', 'aside']):
-                element.decompose()
-
-            # Get main content
-            main_content = soup.find('main') or soup.find('article') or soup.find('body')
-
-            if not main_content:
-                raise ValueError("Could not find main content in the article")
-
-            # Get text content
-            text = main_content.get_text()
-
-            # Break into lines and remove leading/trailing space
-            lines = (line.strip() for line in text.splitlines())
-
-            # Break multi-headlines into a line each
-            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-
-            # Drop blank lines and join
-            content = '\n'.join(chunk for chunk in chunks if chunk)
-
-            if not content:
-                raise ValueError("No text content found in the article")
-
-            return content
-
-        except requests.exceptions.RequestException as e:
-            raise ValueError(f"Error accessing URL: {str(e)}")
-        except Exception as e:
-            raise ValueError(f"Error processing web article: {str(e)}")
-
-    async def _extract_from_video(self, url: str) -> str:
-        """Extract text content from video using AssemblyAI transcription."""
-        try:
-            # For YouTube videos, get the audio URL first
-            if 'youtube.com' in url or 'youtu.be' in url:
-                try:
-                    yt = YouTube(url)
-                    audio_stream = yt.streams.filter(only_audio=True).first()
-                    if not audio_stream:
-                        raise ValueError("No audio stream found in the video")
-                    url = audio_stream.url
-                except Exception as e:
-                    raise ValueError(f"Error processing YouTube video: {str(e)}")
-
-            # Use advanced AI model's audio processing
-            audio_result = await ai_model.process_audio_content(url)
-            if not audio_result or 'text' not in audio_result:
-                raise ValueError("No transcription generated from the video")
-
-            return audio_result.get('text', '')
-
-        except Exception as e:
-            logger.error(f"Error extracting video content: {str(e)}")
+            logging.error(f"Error converting image to text: {str(e)}")
             raise
 
-# Create singleton instance
-content_converter = ContentConverter()
+    def _json_to_yaml(self, json_data: Union[str, Dict]) -> str:
+        """
+        Конвертация JSON в YAML
+
+        Args:
+            json_data: JSON данные (строка или словарь)
+
+        Returns:
+            str: YAML представление данных
+
+        Raises:
+            ValueError: Если данные имеют неверный формат
+            Exception: При ошибке конвертации
+        """
+        try:
+            if isinstance(json_data, str):
+                json_data = json.loads(json_data)
+            elif not isinstance(json_data, dict) and not isinstance(json_data, list):
+                raise ValueError(f"Invalid JSON data type: {type(json_data)}")
+
+            return yaml.dump(json_data, allow_unicode=True, sort_keys=False)
+        except json.JSONDecodeError as e:
+            logging.error(f"Invalid JSON format: {str(e)}")
+            raise ValueError(f"Invalid JSON format: {str(e)}")
+        except Exception as e:
+            logging.error(f"Error converting JSON to YAML: {str(e)}")
+            raise
+
+    def _yaml_to_json(self, yaml_data: str) -> Dict:
+        """
+        Конвертация YAML в JSON
+
+        Args:
+            yaml_data: YAML данные
+
+        Returns:
+            Dict: JSON представление данных
+
+        Raises:
+            ValueError: Если данные имеют неверный формат
+            Exception: При ошибке конвертации
+        """
+        try:
+            if not isinstance(yaml_data, str):
+                raise ValueError(f"YAML data must be a string, got {type(yaml_data)}")
+
+            return yaml.safe_load(yaml_data)
+        except yaml.YAMLError as e:
+            logging.error(f"Invalid YAML format: {str(e)}")
+            raise ValueError(f"Invalid YAML format: {str(e)}")
+        except Exception as e:
+            logging.error(f"Error converting YAML to JSON: {str(e)}")
+            raise
+
+    def _csv_to_json(self, csv_data: str) -> List[Dict]:
+        """
+        Конвертация CSV в JSON
+
+        Args:
+            csv_data: CSV данные
+
+        Returns:
+            List[Dict]: JSON представление данных
+
+        Raises:
+            ValueError: Если данные имеют неверный формат
+            Exception: При ошибке конвертации
+        """
+        try:
+            if not isinstance(csv_data, str):
+                raise ValueError(f"CSV data must be a string, got {type(csv_data)}")
+
+            df = pd.read_csv(csv_data)
+            return json.loads(df.to_json(orient="records"))
+        except pd.errors.ParserError as e:
+            logging.error(f"Invalid CSV format: {str(e)}")
+            raise ValueError(f"Invalid CSV format: {str(e)}")
+        except Exception as e:
+            logging.error(f"Error converting CSV to JSON: {str(e)}")
+            raise
+
+    def _json_to_csv(self, json_data: Union[str, List[Dict]]) -> str:
+        """
+        Конвертация JSON в CSV
+
+        Args:
+            json_data: JSON данные (строка или список словарей)
+
+        Returns:
+            str: CSV представление данных
+
+        Raises:
+            ValueError: Если данные имеют неверный формат
+            Exception: При ошибке конвертации
+        """
+        try:
+            if isinstance(json_data, str):
+                json_data = json.loads(json_data)
+            elif not isinstance(json_data, list):
+                raise ValueError(
+                    f"JSON data must be a list of dictionaries or a JSON string, got {type(json_data)}"
+                )
+
+            df = pd.DataFrame(json_data)
+            return df.to_csv(index=False)
+        except json.JSONDecodeError as e:
+            logging.error(f"Invalid JSON format: {str(e)}")
+            raise ValueError(f"Invalid JSON format: {str(e)}")
+        except Exception as e:
+            logging.error(f"Error converting JSON to CSV: {str(e)}")
+            raise
+
+    def _text_to_summary(self, text: str) -> str:
+        """
+        Конвертация текста в краткое содержание
+
+        Args:
+            text: Текст для суммаризации
+
+        Returns:
+            str: Краткое содержание текста
+
+        Raises:
+            ValueError: Если текст пустой
+            Exception: При ошибке конвертации
+        """
+        try:
+            if not text or not isinstance(text, str):
+                raise ValueError("Text must be a non-empty string")
+
+            # Здесь должна быть реализация суммаризации
+            # В реальном приложении используйте модель для суммаризации
+            logging.warning("Using placeholder for text_to_summary conversion")
+
+            # Простая экстрактивная суммаризация
+            sentences = text.split(". ")
+            if len(sentences) <= 3:
+                return text
+
+            return ". ".join(sentences[:3]) + "."
+        except ValueError as e:
+            logging.error(f"Validation error in text_to_summary: {str(e)}")
+            raise
+        except Exception as e:
+            logging.error(f"Error converting text to summary: {str(e)}")
+            raise
+
+    def _image_to_vector(self, image_path: Union[str, Path]) -> np.ndarray:
+        """
+        Конвертация изображения в векторное представление
+
+        Args:
+            image_path: Путь к изображению
+
+        Returns:
+            np.ndarray: Векторное представление изображения
+
+        Raises:
+            FileNotFoundError: Если файл не найден
+            ValueError: Если изображение не удалось загрузить
+            Exception: При ошибке конвертации
+        """
+        try:
+            image_path = str(image_path)
+            image = cv2.imread(image_path)
+            if image is None:
+                raise ValueError(f"Could not load image: {image_path}")
+
+            # Ресайз изображения до фиксированного размера
+            image = cv2.resize(image, (224, 224))
+
+            # Нормализация
+            image = image.astype(np.float32) / 255.0
+
+            # Преобразование в тензор
+            image_tensor = torch.from_numpy(image).permute(2, 0, 1).unsqueeze(0)
+            image_tensor = image_tensor.to(self.device)
+
+            # Здесь должна быть модель для извлечения признаков
+            # В реальном приложении используйте предобученную модель
+            logging.warning("Using placeholder for image_to_vector conversion")
+
+            # Возвращаем случайный вектор для демонстрации
+            return np.random.randn(1, 512).astype(np.float32)
+        except FileNotFoundError as e:
+            logging.error(f"File not found: {str(e)}")
+            raise
+        except ValueError as e:
+            logging.error(f"Validation error in image_to_vector: {str(e)}")
+            raise
+        except Exception as e:
+            logging.error(f"Error converting image to vector: {str(e)}")
+            raise
+
+    def cleanup(self):
+        """
+        Очистка ресурсов
+        """
+        try:
+            if self.model is not None:
+                self.model = self.model.cpu()
+            torch.cuda.empty_cache()
+            logging.info("ContentConverter resources cleaned up")
+        except Exception as e:
+            logging.error(f"Error during cleanup: {str(e)}")
